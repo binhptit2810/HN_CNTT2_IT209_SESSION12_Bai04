@@ -1,0 +1,76 @@
+name: Deploy Spring Boot Container to VPS via SSH
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  # ==========================================
+  # Job 1: Build & Push Docker Image to GHCR
+  # ==========================================
+  build-image:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Docker Image
+        run: |
+          # Chuẩn hóa tên image sang chữ thường (bắt buộc theo chuẩn Docker & GHCR)
+          ACTOR_LOWER=$(echo "${{ github.actor }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_URI="ghcr.io/${ACTOR_LOWER}/app:latest"
+          
+          echo "Building Docker image: ${IMAGE_URI}..."
+          docker build -t ${IMAGE_URI} .
+
+          echo "Pushing Docker image to GHCR..."
+          docker push ${IMAGE_URI}
+
+  # ==========================================
+  # Job 2: Deploy to VPS via SSH Action
+  # ==========================================
+  deploy-vps:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    needs: build-image
+    steps:
+      - name: Thực thi câu lệnh triển khai trên VPS qua SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            echo "=== [1] Đăng nhập GitHub Container Registry trên VPS ==="
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            echo "=== [2] Kéo Image mới nhất từ GHCR ==="
+            ACTOR_LOWER=$(echo "${{ github.actor }}" | tr '[:upper:]' '[:lower:]')
+            IMAGE_URI="ghcr.io/${ACTOR_LOWER}/app:latest"
+            docker pull ${IMAGE_URI}
+
+            echo "=== [3] Khởi chạy lại container ==="
+            docker stop app || true
+            docker rm app || true
+            docker run -d --name app -p 8080:8080 --restart unless-stopped ${IMAGE_URI}
+
+            echo "=== [4] Kiểm tra trạng thái Container sau khi deploy ==="
+            docker ps -f name=app
+            echo "✅ Container app đã được triển khai thành công trên VPS!"
